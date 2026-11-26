@@ -148,7 +148,7 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
           </p>
           <p className="flex items-center gap-1.5 truncate text-xs text-ink-foreground/70">
             <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-accent" />
-            {isLoading ? 'Typing...' : 'Friendly Intelligent Zone Assistant'}
+            {isLoading ? 'FIZA is typing...' : 'Friendly Intelligent Zone Assistant'}
           </p>
         </div>
         <button
@@ -286,7 +286,7 @@ function renderInline(text: string): ReactNode[] {
     } else if (url) {
       nodes.push(
         <ChatLink key={key} href={url}>
-          {url.replace(/^https?:\/\//, '').replace(/\/$/, '')}
+          {url}
         </ChatLink>,
       )
     } else if (email) {
