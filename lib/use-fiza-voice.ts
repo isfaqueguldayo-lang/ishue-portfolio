@@ -33,6 +33,7 @@ export function useFizaSpeech() {
     () => false,
   )
   const [isSpeaking, setIsSpeaking] = useState(false)
+  const [activeId, setActiveId] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const objectUrlRef = useRef<string | null>(null)
   const requestRef = useRef<AbortController | null>(null)
@@ -42,10 +43,20 @@ export function useFizaSpeech() {
     if (!audioRef.current) {
       const audio = new Audio()
       audio.preload = 'auto'
-      audio.addEventListener('playing', () => setIsSpeaking(true))
-      audio.addEventListener('ended', () => setIsSpeaking(false))
-      audio.addEventListener('pause', () => setIsSpeaking(false))
-      audio.addEventListener('error', () => setIsSpeaking(false))
+      const isReply = () => audio.src.startsWith('blob:')
+      const finish = () => {
+        if (!isReply()) return
+        setIsSpeaking(false)
+        setActiveId(null)
+      }
+      audio.addEventListener('playing', () => {
+        if (isReply()) setIsSpeaking(true)
+      })
+      audio.addEventListener('pause', () => {
+        if (isReply()) setIsSpeaking(false)
+      })
+      audio.addEventListener('ended', finish)
+      audio.addEventListener('error', finish)
       audioRef.current = audio
     }
     return audioRef.current
@@ -71,6 +82,7 @@ export function useFizaSpeech() {
   const stop = useCallback(() => {
     releaseAudio()
     setIsSpeaking(false)
+    setActiveId(null)
   }, [releaseAudio])
 
   const unlock = useCallback(() => {
@@ -84,12 +96,17 @@ export function useFizaSpeech() {
   }, [getAudio, supported])
 
   const speak = useCallback(
-    async (text: string) => {
+    async (text: string, id: string | null = null) => {
       if (!supported) return
       releaseAudio()
+      setIsSpeaking(false)
 
       const speakable = toSpeakableText(text).slice(0, MAX_TTS_LENGTH)
-      if (!speakable) return
+      if (!speakable) {
+        setActiveId(null)
+        return
+      }
+      setActiveId(id)
 
       const controller = new AbortController()
       requestRef.current = controller
@@ -115,6 +132,7 @@ export function useFizaSpeech() {
         if (!controller.signal.aborted) {
           console.error('FIZA voice playback failed:', error)
           setIsSpeaking(false)
+          setActiveId(null)
         }
       } finally {
         if (requestRef.current === controller) requestRef.current = null
@@ -123,7 +141,7 @@ export function useFizaSpeech() {
     [getAudio, releaseAudio, supported],
   )
 
-  return { supported, isSpeaking, speak, stop, unlock }
+  return { supported, isSpeaking, activeId, speak, stop, unlock }
 }
 
 type RecognitionResultEvent = {

@@ -104,7 +104,9 @@ export function MascotGuide() {
   return (
     <motion.aside
       aria-label="Portfolio guide"
-      className="fixed right-4 bottom-4 z-50 flex items-end gap-3 md:right-6 md:bottom-6"
+      className={`fixed right-4 bottom-4 z-50 flex max-w-[calc(100vw-1.5rem)] items-end justify-end gap-3 max-sm:right-3 max-sm:bottom-3 md:right-6 md:bottom-6 ${
+        isChatOpen ? 'max-sm:left-3' : ''
+      }`}
       initial={reduceMotion ? false : { opacity: 0, y: 40, scale: 0.8 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ type: 'spring', stiffness: 220, damping: 20, delay: 0.8 }}
@@ -117,7 +119,7 @@ export function MascotGuide() {
             key={current.id}
             role="status"
             aria-live="polite"
-            className="relative mb-6 w-56 rounded-2xl border border-border bg-card px-4 pt-3 pb-3 text-card-foreground shadow-xl shadow-foreground/10 sm:w-64"
+            className="relative mb-6 w-56 max-w-[calc(100vw-7rem)] rounded-2xl border border-border bg-card px-4 pt-3 pb-3 text-card-foreground shadow-xl shadow-foreground/10 sm:w-64"
             initial={
               reduceMotion
                 ? { opacity: 0 }
@@ -186,6 +188,7 @@ export function MascotGuide() {
       </AnimatePresence>
 
       <motion.div
+        className={isChatOpen ? 'max-sm:hidden' : undefined}
         animate={reduceMotion ? undefined : { y: [0, -10, 0] }}
         transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}
       >
