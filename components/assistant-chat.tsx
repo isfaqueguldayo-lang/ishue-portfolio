@@ -3,7 +3,8 @@
 import Image from 'next/image'
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
-import { ArrowUp, RotateCcw, X } from 'lucide-react'
+import { ArrowUp, Mic, RotateCcw, Square, Volume2, VolumeX, X } from 'lucide-react'
+import { useFizaSpeech, useSpeechInput } from '@/lib/use-fiza-voice'
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string }
 
@@ -30,6 +31,24 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const [voiceEnabled, setVoiceEnabled] = useState(true)
+  const voiceEnabledRef = useRef(voiceEnabled)
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  const speech = useFizaSpeech()
+  const sendMessageRef = useRef<(text: string) => void>(() => {})
+  const speechInput = useSpeechInput({
+    onInterim: (text) => setInput(text),
+    onFinal: (text) => sendMessageRef.current(text),
+    onError: (message) => setVoiceError(message),
+  })
+
+  useEffect(() => {
+    voiceEnabledRef.current = voiceEnabled
+  }, [voiceEnabled])
+
+  useEffect(() => {
+    sendMessageRef.current = sendMessage
+  })
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -42,7 +61,10 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     function handleEscape(event: globalThis.KeyboardEvent) {
-      if (event.key === 'Escape') onClose()
+      if (event.key === 'Escape') {
+        window.speechSynthesis?.cancel()
+        onClose()
+      }
     }
     window.addEventListener('keydown', handleEscape)
     return () => window.removeEventListener('keydown', handleEscape)
@@ -52,6 +74,9 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
     const content = text.trim()
     if (!content || isLoading) return
 
+    speech.stop()
+    setVoiceError(null)
+    let reply = ''
     const history = [...messages.slice(1), { role: 'user' as const, content }]
     setMessages((prev) => [...prev, { role: 'user', content }, { role: 'assistant', content: '' }])
     setInput('')
@@ -60,13 +85,15 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
     const controller = new AbortController()
     abortRef.current = controller
 
-    const appendToReply = (chunk: string) =>
+    const appendToReply = (chunk: string) => {
+      reply += chunk
       setMessages((prev) => {
         const next = [...prev]
         const last = next[next.length - 1]
         next[next.length - 1] = { ...last, content: last.content + chunk }
         return next
       })
+    }
 
     try {
       const response = await fetch('/api/chat', {
@@ -98,10 +125,37 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
         abortRef.current = null
         setIsLoading(false)
       }
+      if (!controller.signal.aborted && voiceEnabledRef.current && reply.trim()) {
+        speech.speak(reply)
+      }
     }
   }
 
+  function handleClose() {
+    speech.stop()
+    speechInput.stop()
+    onClose()
+  }
+
+  function toggleVoice() {
+    if (voiceEnabled) speech.stop()
+    setVoiceEnabled(!voiceEnabled)
+  }
+
+  function toggleListening() {
+    if (speechInput.isListening) {
+      speechInput.stop()
+      return
+    }
+    speech.stop()
+    setVoiceError(null)
+    setInput('')
+    speechInput.start()
+  }
+
   function clearChat() {
+    speech.stop()
+    setVoiceError(null)
     abortRef.current?.abort()
     abortRef.current = null
     setIsLoading(false)
@@ -148,9 +202,31 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
           </p>
           <p className="flex items-center gap-1.5 truncate text-xs text-ink-foreground/70">
             <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-accent" />
-            {isLoading ? 'FIZA is typing...' : 'Friendly Intelligent Zone Assistant'}
+            {speechInput.isListening
+              ? 'Listening...'
+              : isLoading
+                ? 'FIZA is typing...'
+                : speech.isSpeaking
+                  ? 'FIZA is speaking...'
+                  : 'Friendly Intelligent Zone Assistant'}
           </p>
         </div>
+        {speech.supported && (
+          <button
+            type="button"
+            onClick={toggleVoice}
+            className={headerButtonClass}
+            aria-pressed={voiceEnabled}
+            aria-label={voiceEnabled ? 'Mute FIZA voice' : 'Unmute FIZA voice'}
+            title={voiceEnabled ? 'Voice on' : 'Voice off'}
+          >
+            {voiceEnabled ? (
+              <Volume2 className="size-4" aria-hidden="true" />
+            ) : (
+              <VolumeX className="size-4" aria-hidden="true" />
+            )}
+          </button>
+        )}
         <button
           type="button"
           onClick={clearChat}
@@ -161,7 +237,7 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
         >
           <RotateCcw className="size-4" aria-hidden="true" />
         </button>
-        <button type="button" onClick={onClose} className={headerButtonClass} aria-label="Close chat" title="Close">
+        <button type="button" onClick={handleClose} className={headerButtonClass} aria-label="Close chat" title="Close">
           <X className="size-4" aria-hidden="true" />
         </button>
       </header>
@@ -210,10 +286,54 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
         )}
       </div>
 
-      <form onSubmit={handleSubmit} className="flex items-end gap-2 border-t border-border p-3">
+      {voiceError && (
+        <p role="alert" className="border-t border-border px-4 pt-2 text-xs text-destructive">
+          {voiceError}
+        </p>
+      )}
+      {speechInput.isListening && (
+        <p className="flex items-center gap-2 px-4 pt-2 text-xs font-medium text-red-600" role="status">
+          <span className="relative flex size-2" aria-hidden="true">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-red-500 opacity-75 motion-reduce:animate-none" />
+            <span className="relative inline-flex size-2 rounded-full bg-red-600" />
+          </span>
+          {'Listening... speak now'}
+        </p>
+      )}
+      <form
+        onSubmit={handleSubmit}
+        className={`flex items-end gap-2 p-3 ${voiceError || speechInput.isListening ? '' : 'border-t border-border'}`}
+      >
         <label htmlFor="assistant-input" className="sr-only">
           Ask a question about Ishfaq
         </label>
+        {speechInput.supported && (
+          <button
+            type="button"
+            onClick={toggleListening}
+            disabled={isLoading}
+            aria-pressed={speechInput.isListening}
+            aria-label={speechInput.isListening ? 'Stop recording' : 'Ask with your voice'}
+            title={speechInput.isListening ? 'Stop recording' : 'Speak to FIZA'}
+            className={`relative flex size-10 shrink-0 items-center justify-center rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 ${
+              speechInput.isListening
+                ? 'border-red-600 bg-red-600 text-white'
+                : 'border-input bg-background text-foreground hover:border-primary hover:text-primary'
+            }`}
+          >
+            {speechInput.isListening && (
+              <span
+                aria-hidden="true"
+                className="absolute inset-0 animate-ping rounded-full bg-red-500/50 motion-reduce:animate-none"
+              />
+            )}
+            {speechInput.isListening ? (
+              <Square className="relative size-3.5 fill-current" aria-hidden="true" />
+            ) : (
+              <Mic className="relative size-4" aria-hidden="true" />
+            )}
+          </button>
+        )}
         <textarea
           id="assistant-input"
           ref={inputRef}
@@ -222,7 +342,7 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={handleKeyDown}
           maxLength={2000}
-          placeholder="Ask about Ishfaq..."
+          placeholder={speechInput.isListening ? 'Listening...' : 'Ask about Ishfaq...'}
           dir="auto"
           className="max-h-24 min-h-10 flex-1 resize-none rounded-2xl border border-input bg-background px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         />
