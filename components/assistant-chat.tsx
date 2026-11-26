@@ -36,10 +36,10 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
   const [voiceError, setVoiceError] = useState<string | null>(null)
   const speech = useFizaSpeech()
   const stopSpeaking = speech.stop
-  const sendMessageRef = useRef<(text: string) => void>(() => {})
+  const sendMessageRef = useRef<(text: string, options?: { viaVoice?: boolean }) => void>(() => {})
   const speechInput = useSpeechInput({
     onInterim: (text) => setInput(text),
-    onFinal: (text) => sendMessageRef.current(text),
+    onFinal: (text) => sendMessageRef.current(text, { viaVoice: true }),
     onError: (message) => setVoiceError(message),
   })
 
@@ -71,14 +71,14 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener('keydown', handleEscape)
   }, [onClose, stopSpeaking])
 
-  async function sendMessage(text: string) {
+  async function sendMessage(text: string, { viaVoice = false }: { viaVoice?: boolean } = {}) {
     const content = text.trim()
     if (!content || isLoading) return
 
     speech.stop()
-    if (voiceEnabledRef.current) speech.unlock()
     setVoiceError(null)
     let reply = ''
+    const replyId = String(messages.length + 1)
     const history = [...messages.slice(1), { role: 'user' as const, content }]
     setMessages((prev) => [...prev, { role: 'user', content }, { role: 'assistant', content: '' }])
     setInput('')
@@ -127,10 +127,19 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
         abortRef.current = null
         setIsLoading(false)
       }
-      if (!controller.signal.aborted && voiceEnabledRef.current && reply.trim()) {
-        speech.speak(reply)
+      if (viaVoice && !controller.signal.aborted && voiceEnabledRef.current && reply.trim()) {
+        speech.speak(reply, replyId)
       }
     }
+  }
+
+  function toggleMessageSpeech(text: string, id: string) {
+    if (speech.activeId === id) {
+      speech.stop()
+      return
+    }
+    speech.unlock()
+    speech.speak(text, id)
   }
 
   function handleClose() {
@@ -188,7 +197,7 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
     <motion.div
       role="dialog"
       aria-label="Chat with FIZA, Ishfaq's AI guide"
-      className="mb-4 flex h-[min(32rem,calc(100dvh-8rem))] w-[min(22rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-3xl border border-border bg-card text-card-foreground shadow-2xl shadow-foreground/15"
+      className="mb-4 flex h-[min(32rem,calc(100dvh-8rem))] w-[min(22rem,calc(100vw-2rem))] min-w-0 flex-col overflow-hidden rounded-3xl border border-border bg-card text-card-foreground shadow-2xl shadow-foreground/15 max-sm:mb-0 max-sm:ml-auto max-sm:h-[75dvh] max-sm:max-h-[75dvh] max-sm:w-[calc(100vw-1.5rem)] max-sm:max-w-[380px] max-sm:rounded-2xl"
       initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 24, scale: 0.9 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 16, scale: 0.92, transition: { duration: 0.15 } }}
@@ -220,8 +229,8 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
             onClick={toggleVoice}
             className={headerButtonClass}
             aria-pressed={voiceEnabled}
-            aria-label={voiceEnabled ? 'Mute FIZA voice' : 'Unmute FIZA voice'}
-            title={voiceEnabled ? 'Voice on' : 'Voice off'}
+            aria-label={voiceEnabled ? 'Turn off spoken replies to voice messages' : 'Turn on spoken replies to voice messages'}
+            title={voiceEnabled ? 'Voice replies on (for mic messages)' : 'Voice replies off'}
           >
             {voiceEnabled ? (
               <Volume2 className="size-4" aria-hidden="true" />
@@ -245,30 +254,65 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
         </button>
       </header>
 
-      <div ref={scrollRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4" aria-live="polite">
-        {messages.map((message, index) => (
-          <motion.div
-            key={index}
-            initial={reduceMotion ? false : { opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.2 }}
-            className={
-              message.role === 'user'
-                ? 'max-w-[85%] self-end rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-sm leading-relaxed break-words whitespace-pre-wrap text-primary-foreground'
-                : 'max-w-[88%] self-start rounded-2xl rounded-bl-md bg-secondary px-3.5 py-2.5 text-sm leading-relaxed break-words text-secondary-foreground'
-            }
-          >
-            {message.content ? (
-              message.role === 'assistant' ? (
-                <FormattedReply text={message.content} />
+      <div
+        ref={scrollRef}
+        className="flex min-w-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto px-4 py-4 max-sm:px-3"
+        aria-live="polite"
+      >
+        {messages.map((message, index) => {
+          const id = String(index)
+          const isStreaming = isLoading && index === messages.length - 1
+          const canSpeak =
+            speech.supported && message.role === 'assistant' && message.content.length > 0 && !isStreaming
+          const isActive = speech.activeId === id
+
+          return (
+            <motion.div
+              key={index}
+              initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              className={
+                message.role === 'user'
+                  ? 'min-w-0 max-w-[85%] self-end rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-primary-foreground'
+                  : 'flex min-w-0 max-w-[88%] items-start gap-1.5 self-start rounded-2xl rounded-bl-md bg-secondary py-2.5 pr-1.5 pl-3.5 text-sm leading-relaxed break-words [overflow-wrap:anywhere] text-secondary-foreground'
+              }
+            >
+              {message.role === 'assistant' ? (
+                <>
+                  <div className="min-w-0 flex-1">
+                    {message.content ? (
+                      <FormattedReply text={message.content} />
+                    ) : (
+                      <TypingIndicator reduceMotion={Boolean(reduceMotion)} />
+                    )}
+                  </div>
+                  {canSpeak && (
+                    <button
+                      type="button"
+                      onClick={() => toggleMessageSpeech(message.content, id)}
+                      aria-label={isActive ? 'Stop reading this reply' : 'Read this reply aloud'}
+                      title={isActive ? 'Stop' : 'Listen'}
+                      className={`-mt-0.5 shrink-0 rounded-full p-1 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
+                        isActive
+                          ? 'text-primary'
+                          : 'text-muted-foreground/70 hover:bg-background/70 hover:text-primary'
+                      }`}
+                    >
+                      {isActive ? (
+                        <Square className={`size-3 fill-current ${speech.isSpeaking ? '' : 'animate-pulse'}`} aria-hidden="true" />
+                      ) : (
+                        <Volume2 className="size-3.5" aria-hidden="true" />
+                      )}
+                    </button>
+                  )}
+                </>
               ) : (
                 message.content
-              )
-            ) : (
-              <TypingIndicator reduceMotion={Boolean(reduceMotion)} />
-            )}
-          </motion.div>
-        ))}
+              )}
+            </motion.div>
+          )
+        })}
 
         {showQuickQuestions && (
           <div className="mt-1 flex flex-wrap gap-2" aria-label="Suggested questions">
