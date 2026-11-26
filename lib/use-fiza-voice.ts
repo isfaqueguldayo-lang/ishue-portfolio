@@ -1,42 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { MAX_TTS_LENGTH } from '@/lib/tts-config'
 
-const PREFERRED_VOICES = ['jenny', 'aria', 'samantha', 'google uk english female', 'zira']
-const FEMALE_HINTS = [
-  'female', 'woman', 'jenny', 'aria', 'samantha', 'zira', 'victoria', 'karen', 'moira', 'tessa',
-  'fiona', 'susan', 'hazel', 'libby', 'sonia', 'natasha', 'michelle', 'emma', 'ava', 'allison',
-  'serena', 'kate', 'joanna', 'salli', 'kimberly', 'ivy', 'heera', 'neerja', 'swara', 'uzma', 'gul',
-]
-const ARABIC_SCRIPT = /[\u0600-\u06FF\u0750-\u077F]/
-const PITCH = 1.08
-const RATE = 0.96
-const MAX_CHUNK_LENGTH = 200
+// A zero-length WAV used to unlock audio playback during a user gesture (needed on iOS Safari).
+const SILENT_AUDIO = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
 
 const noopSubscribe = () => () => {}
-
-function isFemale(voice: SpeechSynthesisVoice) {
-  const name = voice.name.toLowerCase()
-  return FEMALE_HINTS.some((hint) => name.includes(hint))
-}
-
-function pickVoice(voices: SpeechSynthesisVoice[], text: string) {
-  if (ARABIC_SCRIPT.test(text)) {
-    const nativeVoices = voices.filter((voice) => /^(ur|sd)\b/i.test(voice.lang))
-    return nativeVoices.find(isFemale) ?? nativeVoices[0] ?? null
-  }
-
-  const english = voices.filter((voice) => voice.lang.toLowerCase().startsWith('en'))
-  const pool = english.length > 0 ? english : voices
-  const naturalFemale = pool.find((voice) => /natural/i.test(voice.name) && isFemale(voice))
-  if (naturalFemale) return naturalFemale
-
-  for (const preferred of PREFERRED_VOICES) {
-    const match = pool.find((voice) => voice.name.toLowerCase().includes(preferred))
-    if (match) return match
-  }
-  return pool.find(isFemale) ?? pool[0] ?? null
-}
 
 export function toSpeakableText(text: string) {
   return text
@@ -56,77 +26,104 @@ export function toSpeakableText(text: string) {
     .trim()
 }
 
-function toChunks(text: string) {
-  const sentences = text.match(/[^.!?۔؟]+[.!?۔؟]*/g) ?? [text]
-  const chunks: string[] = []
-  for (const sentence of sentences) {
-    const last = chunks[chunks.length - 1]
-    if (last && last.length + sentence.length <= MAX_CHUNK_LENGTH) chunks[chunks.length - 1] = last + sentence
-    else chunks.push(sentence)
-  }
-  return chunks.map((chunk) => chunk.trim()).filter(Boolean)
-}
-
 export function useFizaSpeech() {
   const supported = useSyncExternalStore(
     noopSubscribe,
-    () => 'speechSynthesis' in window,
+    () => typeof Audio !== 'undefined',
     () => false,
   )
   const [isSpeaking, setIsSpeaking] = useState(false)
-  const voicesRef = useRef<SpeechSynthesisVoice[]>([])
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const objectUrlRef = useRef<string | null>(null)
+  const requestRef = useRef<AbortController | null>(null)
+  const unlockedRef = useRef(false)
 
-  useEffect(() => {
-    if (!supported) return
-    const synth = window.speechSynthesis
-    const loadVoices = () => {
-      voicesRef.current = synth.getVoices()
+  const getAudio = useCallback(() => {
+    if (!audioRef.current) {
+      const audio = new Audio()
+      audio.preload = 'auto'
+      audio.addEventListener('playing', () => setIsSpeaking(true))
+      audio.addEventListener('ended', () => setIsSpeaking(false))
+      audio.addEventListener('pause', () => setIsSpeaking(false))
+      audio.addEventListener('error', () => setIsSpeaking(false))
+      audioRef.current = audio
     }
-    loadVoices()
-    synth.addEventListener('voiceschanged', loadVoices)
-    return () => {
-      synth.removeEventListener('voiceschanged', loadVoices)
-      synth.cancel()
+    return audioRef.current
+  }, [])
+
+  const releaseAudio = useCallback(() => {
+    requestRef.current?.abort()
+    requestRef.current = null
+    const audio = audioRef.current
+    if (audio) {
+      audio.pause()
+      audio.removeAttribute('src')
+      audio.load()
     }
-  }, [supported])
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = null
+    }
+  }, [])
+
+  useEffect(() => releaseAudio, [releaseAudio])
 
   const stop = useCallback(() => {
-    if (!supported) return
-    window.speechSynthesis.cancel()
+    releaseAudio()
     setIsSpeaking(false)
-  }, [supported])
+  }, [releaseAudio])
+
+  const unlock = useCallback(() => {
+    if (!supported || unlockedRef.current) return
+    unlockedRef.current = true
+    const audio = getAudio()
+    audio.src = SILENT_AUDIO
+    audio.play().catch(() => {
+      unlockedRef.current = false
+    })
+  }, [getAudio, supported])
 
   const speak = useCallback(
-    (text: string) => {
+    async (text: string) => {
       if (!supported) return
-      const synth = window.speechSynthesis
-      synth.cancel()
+      releaseAudio()
 
-      const speakable = toSpeakableText(text)
+      const speakable = toSpeakableText(text).slice(0, MAX_TTS_LENGTH)
       if (!speakable) return
 
-      const voice = pickVoice(voicesRef.current.length ? voicesRef.current : synth.getVoices(), speakable)
-      const chunks = toChunks(speakable)
-      chunks.forEach((chunk, index) => {
-        const utterance = new SpeechSynthesisUtterance(chunk)
-        if (voice) {
-          utterance.voice = voice
-          utterance.lang = voice.lang
-        } else if (ARABIC_SCRIPT.test(chunk)) {
-          utterance.lang = 'ur-PK'
+      const controller = new AbortController()
+      requestRef.current = controller
+
+      try {
+        const response = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: speakable }),
+          signal: controller.signal,
+        })
+        if (!response.ok) throw new Error(`TTS request failed with ${response.status}`)
+
+        const blob = await response.blob()
+        if (controller.signal.aborted) return
+
+        const url = URL.createObjectURL(blob)
+        objectUrlRef.current = url
+        const audio = getAudio()
+        audio.src = url
+        await audio.play()
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          console.error('FIZA voice playback failed:', error)
+          setIsSpeaking(false)
         }
-        utterance.pitch = PITCH
-        utterance.rate = RATE
-        if (index === 0) utterance.onstart = () => setIsSpeaking(true)
-        if (index === chunks.length - 1) utterance.onend = () => setIsSpeaking(false)
-        utterance.onerror = () => setIsSpeaking(false)
-        synth.speak(utterance)
-      })
+      } finally {
+        if (requestRef.current === controller) requestRef.current = null
+      }
     },
-    [supported],
+    [getAudio, releaseAudio, supported],
   )
 
-  return { supported, isSpeaking, speak, stop }
+  return { supported, isSpeaking, speak, stop, unlock }
 }
 
 type RecognitionResultEvent = {

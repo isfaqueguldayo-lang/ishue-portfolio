@@ -35,6 +35,7 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
   const voiceEnabledRef = useRef(voiceEnabled)
   const [voiceError, setVoiceError] = useState<string | null>(null)
   const speech = useFizaSpeech()
+  const stopSpeaking = speech.stop
   const sendMessageRef = useRef<(text: string) => void>(() => {})
   const speechInput = useSpeechInput({
     onInterim: (text) => setInput(text),
@@ -62,19 +63,20 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     function handleEscape(event: globalThis.KeyboardEvent) {
       if (event.key === 'Escape') {
-        window.speechSynthesis?.cancel()
+        stopSpeaking()
         onClose()
       }
     }
     window.addEventListener('keydown', handleEscape)
     return () => window.removeEventListener('keydown', handleEscape)
-  }, [onClose])
+  }, [onClose, stopSpeaking])
 
   async function sendMessage(text: string) {
     const content = text.trim()
     if (!content || isLoading) return
 
     speech.stop()
+    if (voiceEnabledRef.current) speech.unlock()
     setVoiceError(null)
     let reply = ''
     const history = [...messages.slice(1), { role: 'user' as const, content }]
@@ -148,6 +150,7 @@ export function AssistantChat({ onClose }: { onClose: () => void }) {
       return
     }
     speech.stop()
+    if (voiceEnabled) speech.unlock()
     setVoiceError(null)
     setInput('')
     speechInput.start()
